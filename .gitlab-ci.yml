@@ -1,0 +1,121 @@
+cache:
+  paths:
+    - .terraform/plugins
+ 
+stages:
+  - plan
+  - deploy
+
+deploy_staging:
+  stage: deploy
+  tags:
+    - terraform
+  variables:
+    TF_VAR_DEPLOY_INTO_ACCOUNT_ID: ${STAGING_ACCOUNT_ID}
+    TF_VAR_ASSUME_ROLE_EXTERNAL_ID: ${STAGING_ASSUME_ROLE_EXTERNAL_ID}
+    TF_VAR_AWS_REGION: ${STAGING_AWS_REGION}
+  script:
+    - terraform init -backend-config="bucket=${STAGING_TERRAFORM_S3_BUCKET}"
+      -backend-config="region=${TF_VAR_AWS_REGION}" -backend-config="role_arn=arn:aws:iam::${TF_VAR_DEPLOY_INTO_ACCOUNT_ID}:role/S3BackendRole"
+      -backend-config="external_id=${TF_VAR_ASSUME_ROLE_EXTERNAL_ID}"
+      -backend-config="session_name=TerraformBackend" terraform-configuration
+    - terraform apply -auto-approve -input=false terraform-configuration
+  environment:
+    name: staging
+    url: https://staging.example.com
+    on_stop: stop_staging
+  only:
+    variables:
+      - $DEPLOY_TO == "staging"
+
+stop_staging:
+  stage: deploy
+  tags:
+    - terraform
+  variables:
+    TF_VAR_DEPLOY_INTO_ACCOUNT_ID: ${STAGING_ACCOUNT_ID}
+    TF_VAR_ASSUME_ROLE_EXTERNAL_ID: ${STAGING_ASSUME_ROLE_EXTERNAL_ID}
+    TF_VAR_AWS_REGION: ${STAGING_AWS_REGION}
+  script:
+    - terraform init -backend-config="bucket=${STAGING_TERRAFORM_S3_BUCKET}"
+      -backend-config="region=${TF_VAR_AWS_REGION}" -backend-config="role_arn=arn:aws:iam::${TF_VAR_DEPLOY_INTO_ACCOUNT_ID}:role/S3BackendRole"
+      -backend-config="external_id=${TF_VAR_ASSUME_ROLE_EXTERNAL_ID}"
+      -backend-config="session_name=TerraformBackend" terraform-configuration
+    - terraform destroy -input=false -auto-approve terraform-configuration
+  when: manual
+  environment:
+    name: staging
+    action: stop
+  only:
+    variables:
+      - $DEPLOY_TO == "staging"
+
+plan_production:
+  stage: plan
+  tags:
+    - terraform
+  variables:
+    TF_VAR_DEPLOY_INTO_ACCOUNT_ID: ${PRODUCTION_ACCOUNT_ID}
+    TF_VAR_ASSUME_ROLE_EXTERNAL_ID: ${PRODUCTION_ASSUME_ROLE_EXTERNAL_ID}
+    TF_VAR_AWS_REGION: ${PRODUCTION_AWS_REGION}
+  artifacts:
+    paths:
+    - production_plan.txt
+    - production_plan.bin
+    expire_in: 1 week
+  script:
+    - terraform init -backend-config="bucket=${PRODUCTION_TERRAFORM_S3_BUCKET}"
+      -backend-config="region=${TF_VAR_AWS_REGION}" -backend-config="role_arn=arn:aws:iam::${TF_VAR_DEPLOY_INTO_ACCOUNT_ID}:role/S3BackendRole"
+      -backend-config="external_id=${TF_VAR_ASSUME_ROLE_EXTERNAL_ID}"
+      -backend-config="session_name=TerraformBackend" terraform-configuration
+    - terraform plan -input=false -out=production_plan.bin terraform-configuration
+    - terraform plan -no-color production_plan.bin > production_plan.txt
+  only:
+    variables:
+      - $DEPLOY_TO == "production"
+
+deploy_production:
+  stage: deploy
+  when: manual
+  tags:
+    - terraform
+  variables:
+    TF_VAR_DEPLOY_INTO_ACCOUNT_ID: ${PRODUCTION_ACCOUNT_ID}
+    TF_VAR_ASSUME_ROLE_EXTERNAL_ID: ${PRODUCTION_ASSUME_ROLE_EXTERNAL_ID}
+    TF_VAR_AWS_REGION: ${PRODUCTION_AWS_REGION}
+  script:
+    - terraform init -backend-config="bucket=${PRODUCTION_TERRAFORM_S3_BUCKET}"
+      -backend-config="region=${TF_VAR_AWS_REGION}" -backend-config="role_arn=arn:aws:iam::${TF_VAR_DEPLOY_INTO_ACCOUNT_ID}:role/S3BackendRole"
+      -backend-config="external_id=${TF_VAR_ASSUME_ROLE_EXTERNAL_ID}"
+      -backend-config="session_name=TerraformBackend" terraform-configuration
+    - terraform apply -auto-approve -input=false production_plan.bin
+  environment:
+    name: production
+    url: https://production.example.com
+    on_stop: stop_production
+  only:
+    variables:
+      - $DEPLOY_TO == "production"
+      
+stop_production:
+  stage: deploy
+  tags:
+    - terraform
+  variables:
+    TF_VAR_DEPLOY_INTO_ACCOUNT_ID: ${PRODUCTION_ACCOUNT_ID}
+    TF_VAR_ASSUME_ROLE_EXTERNAL_ID: ${PRODUCTION_ASSUME_ROLE_EXTERNAL_ID}
+    TF_VAR_AWS_REGION: ${PRODUCTION_AWS_REGION}
+  script:
+    - terraform init -backend-config="bucket=${PRODUCTION_TERRAFORM_S3_BUCKET}"
+      -backend-config="region=${TF_VAR_AWS_REGION}" -backend-config="role_arn=arn:aws:iam::${TF_VAR_DEPLOY_INTO_ACCOUNT_ID}:role/S3BackendRole"
+      -backend-config="external_id=${TF_VAR_ASSUME_ROLE_EXTERNAL_ID}"
+      -backend-config="session_name=TerraformBackend" terraform-configuration
+    - terraform destroy -input=false -auto-approve terraform-configuration
+  when: manual
+  environment:
+    name: production
+    action: stop
+  only:
+    variables:
+      - $DEPLOY_TO == "production"
+
