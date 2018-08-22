@@ -1,0 +1,601 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  AWS Cloudformation template to create an EC2 instance, installs and starts
+  GitLab Runner. **WARNING** This template creates an Amazon EC2 instance. You
+  will be billed for the AWS resources used if you create a stack from this
+  template.
+Parameters:
+  GitLabServer:
+    Description: Address of GitLab Web Server application
+    Type: String
+    Default: 'https://gitlab.com'
+  GitLabRunnerToken:
+    Description: >-
+      Registration token for GitLab Runner. Registration token must contain
+      exactly 20 alphanumeric characters
+    AllowedPattern: '^[-_a-zA-Z0-9]*$'
+    Type: String
+    MinLength: '20'
+    MaxLength: '20'
+    NoEcho: true
+  GitLabApiToken:
+    Description: >-
+      Access token for GitLab API for removal of the runner registration from
+      GitLab upon EC2 instance termination.
+    AllowedPattern: '^[-_a-zA-Z0-9]*$'
+    Type: String
+    NoEcho: true
+  DockerVersion:
+    Description: The Docker CE version number.
+    Type: String
+    Default: '18.02'
+  InstanceType:
+    Description: The EC2 instance type for GitLab Runner server
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.nano
+      - t2.micro
+      - t2.small
+      - t2.medium
+      - t2.large
+      - m3.large
+      - m3.xlarge
+      - m3.2xlarge
+      - m4.large
+      - m4.xlarge
+      - m4.2xlarge
+      - m4.4xlarge
+    ConstraintDescription: must be a valid EC2 instance type
+  InstanceStorageSize:
+    Description: GitLab Runner server storage size (in GBs)
+    Type: Number
+    Default: '40'
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    ConstraintDescription: Can contain only ASCII characters.
+  VpcId:
+    Description: GitLab Runner server VPC
+    Type: 'AWS::EC2::VPC::Id'
+  Subnet1ID:
+    Description: GitLab Runner server private subnet 1
+    Type: 'AWS::EC2::Subnet::Id'
+  Subnet2ID:
+    Description: GitLab Runner server private subnet 2
+    Type: 'AWS::EC2::Subnet::Id'
+  Subnet3ID:
+    Description: GitLab Runner server private subnet 3
+    Type: 'AWS::EC2::Subnet::Id'
+  NumInstances:
+    Description: Number of Runner server instances in Auto scaling group
+    Type: Number
+    Default: 1
+Conditions:
+  HasKeyName: !Not 
+    - !Equals 
+      - ''
+      - Ref: KeyName
+  HasGitLabApiToken: !Not 
+    - !Equals 
+      - ''
+      - Ref: GitLabApiToken
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-cd0f5cb6
+    us-east-2:
+      AMI: ami-10547475
+    us-west-1:
+      AMI: ami-09d2fb69
+    us-west-2:
+      AMI: ami-6e1a0117
+    ca-central-1:
+      AMI: ami-9818a7fc
+    eu-west-1:
+      AMI: ami-785db401
+    eu-central-1:
+      AMI: ami-1e339e71
+    eu-west-2:
+      AMI: ami-996372fd
+    ap-southeast-1:
+      AMI: ami-6f198a0c
+    ap-southeast-2:
+      AMI: ami-e2021d81
+    ap-northeast-2:
+      AMI: ami-d28a53bc
+    ap-northeast-1:
+      AMI: ami-ea4eae8c
+    ap-south-1:
+      AMI: ami-099fe766
+    sa-east-1:
+      AMI: ami-10186f7c
+Resources:
+  RunnerIamRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: GitlabRunnerRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: GitLabRunnerPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sts:AssumeRole'
+                Resource: 
+                  - 'arn:aws:iam::*:role/TerraformRole'
+                  - 'arn:aws:iam::*:role/S3BackendRole'
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 294bb1e8-9c8f-41eb-9c34-e37d348993a0
+  RunnerInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      InstanceProfileName: GitlabRunnerProfile
+      Roles:
+        - !Ref RunnerIamRole
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 8431b43e-a91e-4a42-a3f2-3e19e8408683
+  RunnerAutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      LaunchConfigurationName: !Ref RunnerLaunchConfiguration
+      VPCZoneIdentifier:
+        - !Ref Subnet1ID
+        - !Ref Subnet2ID
+        - !Ref Subnet3ID
+      MinSize: !Ref NumInstances
+      MaxSize: !Ref NumInstances
+      Cooldown: '300'
+      NotificationConfigurations: !If
+        - HasGitLabApiToken
+        - - NotificationTypes:
+              - 'autoscaling:EC2_INSTANCE_TERMINATE'
+            TopicARN: !Ref RunnerLifecycleTopic
+        - !Ref 'AWS::NoValue'
+      DesiredCapacity: !Ref NumInstances
+      Tags:
+        - Key: Name
+          Value: GitLabRunner
+          PropagateAtLaunch: 'true'
+    CreationPolicy:
+      ResourceSignal:
+        Count: !Ref NumInstances
+        Timeout: PT15M
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 43142532-0cf7-41bc-8c0f-891d886aee8d
+  RunnerLaunchConfiguration:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Metadata:
+      Comment: Install GitLab Runner
+      'AWS::CloudFormation::Init':
+        config:
+          packages: {}
+          files: {}
+          commands:
+            1-Register-Docker-Runner:
+              command: !Sub >-
+                gitlab-runner register --non-interactive --name
+                Docker-Runner-$(ec2metadata --instance-id) --url ${GitLabServer}
+                --executor docker --docker-image docker:${DockerVersion}
+                --docker-volumes /var/run/docker.sock:/var/run/docker.sock
+                --registration-token ${GitLabRunnerToken} --locked=false
+            2-Register-Shell-Runner:
+              command: !Sub >-
+                gitlab-runner register --non-interactive --name
+                Shell-Runner-$(ec2metadata --instance-id) --url ${GitLabServer}
+                --executor shell --registration-token ${GitLabRunnerToken}
+                --locked=false --tag-list terraform,awscli
+            3-Start-Runner:
+              command: gitlab-runner start
+      'AWS::CloudFormation::Designer':
+        id: aece8c9d-d225-49d9-a729-14ec4a45ceea
+    Properties:
+      KeyName: !If
+        - HasKeyName
+        - !Ref KeyName
+        - !Ref 'AWS::NoValue'
+      ImageId: !FindInMap
+        - RegionMap
+        - !Ref 'AWS::Region'
+        - AMI
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !GetAtt
+        - RunnerInstanceProfile
+        - Arn
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref InstanceStorageSize
+      UserData: !Base64
+        'Fn::Join':
+          - |+
+
+          - - '#!/bin/bash'
+            - set -x -e
+            - apt-get update
+            - >-
+              apt-get -y install apt-transport-https ca-certificates curl
+              software-properties-common
+            - >-
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key
+              add -
+            - >-
+              add-apt-repository "deb [arch=amd64]
+              https://download.docker.com/linux/ubuntu $(lsb_release -cs)
+              stable"
+            - apt-get update
+            - apt-get -y install docker-ce awscli unzip
+            - >-
+              wget
+              https://releases.hashicorp.com/terraform/0.11.7/terraform_0.11.7_linux_amd64.zip
+            - unzip terraform_0.11.7_linux_amd64.zip
+            - rm terraform_0.11.7_linux_amd64.zip
+            - mv terraform /usr/local/bin/
+            - >-
+              curl -L
+              https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh
+              | bash
+            - apt-get -y install gitlab-runner
+            - apt-get -y install python-setuptools
+            - >-
+              easy_install
+              https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+            - !Sub >-
+              cfn-init --stack ${AWS::StackName} --resource
+              RunnerLaunchConfiguration --region ${AWS::Region}
+            - !Sub >-
+              cfn-signal -e $? --stack ${AWS::StackName} --resource
+              RunnerAutoScalingGroup --region ${AWS::Region}
+  ScaleDownAtNight:
+    Type: 'AWS::AutoScaling::ScheduledAction'
+    Properties:
+      AutoScalingGroupName: !Ref RunnerAutoScalingGroup
+      DesiredCapacity: 0
+      MaxSize: 0
+      MinSize: 0
+      Recurrence: 0 22 * * *
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: d16f00fe-10db-4d20-bc66-0664546b8f33
+  ScaleUpInMorning:
+    Type: 'AWS::AutoScaling::ScheduledAction'
+    Properties:
+      AutoScalingGroupName: !Ref RunnerAutoScalingGroup
+      DesiredCapacity: 1
+      MaxSize: 1
+      MinSize: 1
+      Recurrence: 0 14 * * 1-5
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 928e53f3-5cb6-495e-a0af-6aea93a04c80
+  RunnerLifecycleTopic:
+    Type: 'AWS::SNS::Topic'
+    Condition: HasGitLabApiToken
+    Properties:
+      Subscription:
+        - Protocol: lambda
+          Endpoint: !GetAtt 
+            - RunnerUnregisterFunction
+            - Arn
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 5acf3eaa-8aae-4d88-a6b8-0b4201d8bd03
+  RunnerUnregisterFunction:
+    Type: 'AWS::Lambda::Function'
+    Condition: HasGitLabApiToken
+    Properties:
+      Handler: index.handler
+      MemorySize: 128
+      Timeout: 15
+      Runtime: nodejs6.10
+      Role: !GetAtt 
+        - RunnerUnregisterRole
+        - Arn
+      Environment:
+        Variables:
+          GITLAB_API_TOKEN: !Ref GitLabApiToken
+      Code:
+        ZipFile: !Sub |-
+          const https = require('https');
+          var extractInstanceIdFromEvent = function(event) {
+            console.log('Event received: ' + event);
+
+            var message = event.Records[0].Sns.Message;
+            console.log('SNS Message: ' + message);
+
+            var regex = /Terminating EC2 instance: (i-[0-9a-z]+)/g;
+            var match = regex.exec(message);
+            var instanceId = match[1];
+            console.log('EC2 Instance ID: ' + instanceId);
+
+            return instanceId;
+          };
+          const optionsForRequestAllRunners = {
+            hostname: 'gitlab.com',
+            method: 'GET',
+            path: '/api/v4/runners',
+            headers: {
+              'PRIVATE-TOKEN': process.env.GITLAB_API_TOKEN
+            },
+            timeout: 5000
+          };
+          const optionsForRunnerDelete = function(runnerId) {
+            return {
+              hostname: 'gitlab.com',
+              method: 'DELETE',
+              path: '/api/v4/runners/'+runnerId,
+              headers: {
+                'PRIVATE-TOKEN': process.env.GITLAB_API_TOKEN
+              },
+              timeout: 5000
+            };
+          };
+          exports.handler = function(event, context) {
+            var ec2InstanceId = extractInstanceIdFromEvent(event);
+
+            const req = https.request(optionsForRequestAllRunners, (res) => {
+              console.log('statusCode:', res.statusCode);
+
+              let rawData = '';
+              res.on('data', (chunk) => { rawData += chunk; });
+              res.on('end', () => {
+                try {
+                  const parsedData = JSON.parse(rawData);
+                  //console.log(parsedData);
+                  parsedData.forEach((elem) => {
+                    if (elem.description && elem.description.endsWith(ec2InstanceId)) {
+                      console.log("About to delete runner: "+elem.description);
+                      const deleteReq = https.request(optionsForRunnerDelete(elem.id));
+                      deleteReq.end();
+                    }
+                  });
+                } catch (e) {
+                  console.error(e.message);
+                }
+              });
+            });
+
+            req.on('error', (e) => {
+              console.error(e);
+            });
+
+            req.end();
+          };
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: f898ddfa-41c5-4382-aebb-02c12666dead
+  RunnerLifecycleRole:
+    Type: 'AWS::IAM::Role'
+    Condition: HasGitLabApiToken
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Principal:
+              Service: ec2.amazonaws.com
+            Effect: Allow
+            Sid: ''
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 91e172ec-6c5e-4ee0-99b8-730a2194aad5
+  RunnerLifecyclePolicy:
+    Type: 'AWS::IAM::Policy'
+    Condition: HasGitLabApiToken
+    Properties:
+      PolicyName: RunnerLifecyclePolicy
+      Roles:
+        - Ref: RunnerLifecycleRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'sns:publish'
+            Resource: !Ref RunnerLifecycleTopic
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: bcf4f765-f8b0-44a3-b937-ccfa8c5622ea
+  RunnerUnregisterPermission:
+    Type: 'AWS::Lambda::Permission'
+    Condition: HasGitLabApiToken
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt 
+        - RunnerUnregisterFunction
+        - Arn
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref RunnerLifecycleTopic
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 7c9ae8c0-95d5-43bf-ad14-ec2ce473dc34
+  RunnerUnregisterRole:
+    Type: 'AWS::IAM::Role'
+    Condition: HasGitLabApiToken
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Principal:
+              Service: lambda.amazonaws.com
+            Effect: Allow
+            Sid: ''
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: c236e2d0-2cdd-447c-9dba-ca60e7c8fb24
+  RunnerUnregisterPolicy:
+    Type: 'AWS::IAM::Policy'
+    Condition: HasGitLabApiToken
+    Properties:
+      PolicyName: RunnerUnregisterPolicy
+      Roles:
+        - Ref: RunnerUnregisterRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:DescribeLogGroups'
+              - 'logs:PutLogEvents'
+            Resource: 'arn:aws:logs:*:*:*'
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 6eace77b-cc29-4fb7-b324-ae3e623e0df3
+Outputs:
+  StackName:
+    Value: !Ref 'AWS::StackName'
+  AwsRegion:
+    Value: !Ref "AWS::Region"
+  AwsAccountId:
+    Value: !Ref "AWS::AccountId"
+Metadata:
+  'AWS::CloudFormation::Designer':
+    aece8c9d-d225-49d9-a729-14ec4a45ceea:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 110
+        'y': 90
+      z: 1
+      embeds: []
+    43142532-0cf7-41bc-8c0f-891d886aee8d:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 230
+        'y': 90
+      z: 1
+      embeds: []
+      isassociatedwith:
+        - aece8c9d-d225-49d9-a729-14ec4a45ceea
+    928e53f3-5cb6-495e-a0af-6aea93a04c80:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 430
+        'y': 160
+      z: 1
+      embeds: []
+      isassociatedwith:
+        - 43142532-0cf7-41bc-8c0f-891d886aee8d
+    d16f00fe-10db-4d20-bc66-0664546b8f33:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 340
+        'y': 160
+      z: 1
+      embeds: []
+      isassociatedwith:
+        - 43142532-0cf7-41bc-8c0f-891d886aee8d
+    8431b43e-a91e-4a42-a3f2-3e19e8408683:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: -50
+        'y': 90
+      z: 1
+      embeds: []
+      isassociatedwith:
+        - 294bb1e8-9c8f-41eb-9c34-e37d348993a0
+    294bb1e8-9c8f-41eb-9c34-e37d348993a0:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: -170
+        'y': 90
+      z: 1
+      embeds: []
+    5acf3eaa-8aae-4d88-a6b8-0b4201d8bd03:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 230
+        'y': 220
+      z: 1
+      embeds: []
+    f898ddfa-41c5-4382-aebb-02c12666dead:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: -30
+        'y': 220
+      z: 1
+      embeds: []
+    91e172ec-6c5e-4ee0-99b8-730a2194aad5:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 350
+        'y': 340
+      z: 1
+      embeds: []
+    bcf4f765-f8b0-44a3-b937-ccfa8c5622ea:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 230
+        'y': 340
+      z: 1
+      embeds: []
+      isassociatedwith:
+        - 91e172ec-6c5e-4ee0-99b8-730a2194aad5
+    7c9ae8c0-95d5-43bf-ad14-ec2ce473dc34:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 90
+        'y': 270
+      z: 1
+      embeds: []
+      isassociatedwith:
+        - f898ddfa-41c5-4382-aebb-02c12666dead
+    c236e2d0-2cdd-447c-9dba-ca60e7c8fb24:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: -30
+        'y': 330
+      z: 1
+      embeds: []
+    6eace77b-cc29-4fb7-b324-ae3e623e0df3:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: -150
+        'y': 330
+      z: 1
+      embeds: []
+      isassociatedwith:
+        - c236e2d0-2cdd-447c-9dba-ca60e7c8fb24
+

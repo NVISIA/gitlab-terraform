@@ -1,0 +1,167 @@
+Parameters:
+  LockTableName:
+    Description: Name of the DynamoDB table to store state locks.
+    Type: String
+    Default: TerraformStateLock
+  GitlabRunnerAccountNumber:
+    Description: >-
+      The account number of the Gitlab Runner's account (the DevOps account).
+      This is used to allow the Gitlab Runner to assume the TerraformRole.
+    Type: String
+  ExternalId:
+    Description: 'Values of the ExternalId parameter used during sts:AssumeRole'
+    Type: String
+AWSTemplateFormatVersion: 2010-09-09
+Resources:
+  TerraformStateBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      AccessControl: Private
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Purpose
+          Value: TerraformState
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 92b2ead2-cb68-4345-a7b0-057955763d51
+  TerraformLockTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: LockID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: LockID
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      TableName: !Ref LockTableName
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 360f9fc9-e778-401f-a4cf-caefe46666bc
+  TerraformRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: TerraformRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Join [ '', [ 'arn:aws:iam::', !Ref GitlabRunnerAccountNumber, ':role/GitlabRunnerRole' ] ]
+            Action:
+              - 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'sts:ExternalId': !Ref ExternalId
+      Path: /
+      Policies:
+        - PolicyName: TerraformPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ec2:*'
+                Resource: '*'
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: a3f3650b-b757-4ce4-94a0-275e35bc36cf
+  S3BackendRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: S3BackendRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Join [ '', [ 'arn:aws:iam::', !Ref GitlabRunnerAccountNumber, ':role/GitlabRunnerRole' ] ]
+            Action:
+              - 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'sts:ExternalId': !Ref ExternalId
+      Path: /
+      Policies:
+        - PolicyName: S3BackendPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                Resource: !Join
+                  - '/'
+                  - - !GetAtt 
+                        - TerraformStateBucket
+                        - Arn
+                    - '*'
+              - Effect: Allow
+                Action:
+                  - 's3:ListBucket'
+                Resource: !GetAtt
+                  - TerraformStateBucket
+                  - Arn
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:DeleteItem'
+                Resource: !GetAtt 
+                  - TerraformLockTable
+                  - Arn
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: e56c4ae0-bc61-4308-9314-e48bc1d2abf4
+Outputs:
+  StackName:
+    Value: !Ref 'AWS::StackName'
+  AwsRegion:
+    Value: !Ref "AWS::Region"
+  AwsAccountId:
+    Value: !Ref "AWS::AccountId"
+  TerraformS3BucketName:
+    Value: !Ref TerraformStateBucket
+Metadata:
+  'AWS::CloudFormation::Designer':
+    360f9fc9-e778-401f-a4cf-caefe46666bc:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 60
+        'y': 90
+      z: 1
+      embeds: []
+    92b2ead2-cb68-4345-a7b0-057955763d51:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 180
+        'y': 90
+      z: 1
+      embeds: []
+    a3f3650b-b757-4ce4-94a0-275e35bc36cf:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 60
+        'y': 190
+      z: 0
+      embeds: []
+    e56c4ae0-bc61-4308-9314-e48bc1d2abf4:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 180
+        'y': 190
+      z: 0
+      embeds: []
+
