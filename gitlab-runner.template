@@ -301,7 +301,7 @@ Resources:
       Handler: index.handler
       MemorySize: 128
       Timeout: 15
-      Runtime: nodejs6.10
+      Runtime: nodejs12.x
       Role: !GetAtt 
         - RunnerUnregisterRole
         - Arn
